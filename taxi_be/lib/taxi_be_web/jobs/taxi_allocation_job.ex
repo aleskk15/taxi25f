@@ -7,122 +7,104 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
 
   def init(request) do
     Process.send(self(), :step1, [:nosuspend])
-    {:ok, %{request: request}}
+    {:ok, %{
+      request: request,
+      accepted: false,
+      start_time: :os.system_time(:second),
+      candidates: [],
+      timer: nil
+    }}
   end
 
-def compute_ride_fare(request) do
-  %{
-    "pickup_address" => pickup_address,
-    "dropoff_address" => dropoff_address
-   } = request
+  def compute_ride_fare(request) do
+    {request, [70, 90, 120, 200, 250] |> Enum.random()}
+  end
 
-  # coord1 = TaxiBeWeb.Geolocator.geocode(pickup_address)
-  # coord2 = TaxiBeWeb.Geolocator.geocode(dropoff_address)
-  # {distance, _duration} = TaxiBeWeb.Geolocator.distance_and_duration(coord1, coord2)
-  {request, [70,90,120,200,250] |> Enum.random() } # Float.ceil(distance/300)}
-end
+  def notify_customer_ride_fare({request, fare}) do
+    %{"username" => customer} = request
+    TaxiBeWeb.Endpoint.broadcast("customer:" <> customer, "booking_request", %{msg: "Ride fare: #{fare}"})
+  end
 
-def notify_customer_ride_fare({request, fare}) do
-  %{"username" => customer} = request
- TaxiBeWeb.Endpoint.broadcast("customer:" <> customer, "booking_request", %{msg: "Ride fare: #{fare}"})
-end
-
-def find_candidate_taxis(%{"pickup_address" => _pickup_address}) do
-  [
-    %{nickname: "frodo", latitude: 19.0319783, longitude: -98.2349368},
-    %{nickname: "pippin", latitude: 19.0061167, longitude: -98.2697737},
-    %{nickname: "samwise", latitude: 19.0092933, longitude: -98.2473716}
-  ]
-end
+  def find_candidate_taxis(%{"pickup_address" => _}) do
+    [
+      %{nickname: "frodo", latitude: 19.0319783, longitude: -98.2349368},
+      %{nickname: "pippin", latitude: 19.0061167, longitude: -98.2697737},
+      %{nickname: "samwise", latitude: 19.0092933, longitude: -98.2473716}
+    ]
+  end
 
   def handle_info(:step1, %{request: request} = state) do
-
-    # task = Task.async(fn -> find_candidate_taxis(request) end)
-
-    # compute_ride_fare(request)
-    # |> notify_customer_ride_fare()
-
-    # list_of_taxis = Task.await(task) |> Enum.shuffle()
-
-    task = Task.async(fn ->
-      compute_ride_fare(request)
-      |> notify_customer_ride_fare()
-    end)
+    compute_ride_fare(request)
+    |> notify_customer_ride_fare()
 
     list_of_taxis = find_candidate_taxis(request)
 
-    Task.await(task)
+    Enum.each(list_of_taxis, fn taxi ->
+      TaxiBeWeb.Endpoint.broadcast(
+        "driver:" <> taxi.nickname,
+        "booking_request",
+        %{
+          msg: "Viaje de '#{request["pickup_address"]}' a '#{request["dropoff_address"]}'",
+          bookingId: request["booking_id"]
+        }
+      )
+    end)
 
-    IO.inspect(list_of_taxis)
+    timer = Process.send_after(self(), :timeout_3_drivers, 90_000)
 
-    # # Select a taxi
-    taxi = hd(list_of_taxis)
-
-    # Forward request to taxi driver
-    %{
-      "pickup_address" => pickup_address,
-      "dropoff_address" => dropoff_address,
-      "booking_id" => booking_id
-    } = request
-    TaxiBeWeb.Endpoint.broadcast(
-      "driver:" <> taxi.nickname,
-      "booking_request",
-       %{
-         msg: "Viaje de '#{pickup_address}' a '#{dropoff_address}'",
-         bookingId: booking_id
-        })
-
-    timer = Process.send_after(self(), TimeOut, 2000)
-
-    {:noreply, %{request: request, contacted_taxi: taxi, candidates: tl(list_of_taxis), timer: timer}}
+    {:noreply, Map.merge(state, %{
+      candidates: list_of_taxis,
+      accepted: false,
+      timer: timer
+    })}
   end
 
-  def auxilary(%{request: request, candidates: list_of_taxis} = state) do
-    taxi = hd(list_of_taxis)
-    IO.inspect(taxi)
-    # Forward request to taxi driver
-    %{
-      "pickup_address" => pickup_address,
-      "dropoff_address" => dropoff_address,
-      "booking_id" => booking_id
-    } = request
-    TaxiBeWeb.Endpoint.broadcast(
-      "driver:" <> taxi.nickname,
-      "booking_request",
-       %{
-         msg: "Viaje de '#{pickup_address}' a '#{dropoff_address}'",
-         bookingId: booking_id
-        })
+  def handle_info(:timeout_3_drivers, %{accepted: false, request: %{"username" => username}} = state) do
+    TaxiBeWeb.Endpoint.broadcast("customer:" <> username, "booking_request", %{
+      msg: "No fue posible asignar un taxi en este momento"
+    })
 
-    {:noreply, %{state | contacted_taxi: taxi, candidates: tl(list_of_taxis)}}
+    {:stop, :normal, state}
   end
 
+  def handle_info(:timeout_3_drivers, state), do: {:noreply, state}
 
-  def handle_info(TimeOut, state) do
-    IO.puts("Time OUT!!!")
-    auxilary(state)
+  def handle_cast({:process_accept, _msg}, %{accepted: false} = state) do
+    %{request: %{"username" => customer}} = state
+
+    TaxiBeWeb.Endpoint.broadcast("customer:" <> customer, "booking_request", %{
+      msg: "Tu taxi está en camino y llegará en 5 minutos"
+    })
+
+    Process.cancel_timer(state.timer)
+
+    {:noreply, %{state | accepted: true}}
   end
 
-  def handle_cast({:process_reject, msg}, state) do
-    IO.puts("ENTERED REJECTION")
-    auxilary(state)
-  end
-
-  def handle_cast({:process_accept, msg}, state) do
-    %{request: %{"username" => customer_username}} = state
-    IO.puts("Inside handle_cast")
-    IO.inspect(state)
-    IO.puts("-------------------")
-    IO.inspect(msg)
-    TaxiBeWeb.Endpoint.broadcast("customer:" <> customer_username, "booking_request", %{msg: "Tu taxi esta en camino y llegara 5 minutos"})
+  def handle_cast({:process_reject, _msg}, state) do
     {:noreply, state}
   end
 
-  def candidate_taxis() do
-    [
-      %{nickname: "frodo", latitude: 19.0319783, longitude: -98.2349368}, # Angelopolis
-      %{nickname: "samwise", latitude: 19.0061167, longitude: -98.2697737}, # Arcangeles
-      %{nickname: "pippin", latitude: 19.0092933, longitude: -98.2473716} # Paseo Destino
-    ]
+  def handle_call({:cancel_request, username}, _from, state) do
+    now = :os.system_time(:second)
+    elapsed = now - state.start_time
+
+    msg =
+      cond do
+        !state.accepted ->
+          "Cancelación sin cargo"
+
+        elapsed >= 0 and elapsed <= 180 ->
+          "Cancelación con cargo de $20"
+
+        elapsed > 180 and elapsed < 300 ->
+          "Cancelación sin cargo"
+
+        true ->
+          "Cancelación fuera de rango"
+      end
+
+    TaxiBeWeb.Endpoint.broadcast("customer:" <> username, "booking_request", %{msg: msg})
+    {:stop, :normal, state, :ok}
   end
 end

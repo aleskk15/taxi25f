@@ -11,7 +11,7 @@ function Customer(props) {
   let [msg1, setMsg1] = useState("");
 
   useEffect(() => {
-    let channel = socket.channel("customer:" + props.username, {token: "123"});
+    let channel = socket.channel("customer:" + props.username, {token: "123"})
     channel.on("greetings", data => console.log(data));
     channel.on("booking_request", dataFromPush => {
       console.log("Received", dataFromPush);
