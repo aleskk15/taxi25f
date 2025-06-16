@@ -22,7 +22,10 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
 
   def notify_customer_ride_fare({request, fare}) do
     %{"username" => customer} = request
-    TaxiBeWeb.Endpoint.broadcast("customer:" <> customer, "booking_request", %{msg: "Ride fare: #{fare}"})
+    msg = %{msg: "Ride fare: #{fare}"}
+
+    IO.inspect(msg, label: "Enviando tarifa al customer:#{customer}")
+    TaxiBeWeb.Endpoint.broadcast("customer:" <> customer, "booking_request", msg)
   end
 
   def find_candidate_taxis(%{"pickup_address" => _}) do
@@ -40,13 +43,17 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
     list_of_taxis = find_candidate_taxis(request)
 
     Enum.each(list_of_taxis, fn taxi ->
+      msg = %{
+        msg: "Viaje de '#{request["pickup_address"]}' a '#{request["dropoff_address"]}'",
+        bookingId: request["booking_id"]
+      }
+
+      IO.inspect(msg, label: "Enviando solicitud a driver:#{taxi.nickname}")
+
       TaxiBeWeb.Endpoint.broadcast(
         "driver:" <> taxi.nickname,
         "booking_request",
-        %{
-          msg: "Viaje de '#{request["pickup_address"]}' a '#{request["dropoff_address"]}'",
-          bookingId: request["booking_id"]
-        }
+        msg
       )
     end)
 
@@ -60,21 +67,24 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
   end
 
   def handle_info(:timeout_3_drivers, %{accepted: false, request: %{"username" => username}} = state) do
-    TaxiBeWeb.Endpoint.broadcast("customer:" <> username, "booking_request", %{
-      msg: "No fue posible asignar un taxi en este momento"
-    })
+    msg = %{msg: "No fue posible asignar un taxi en este momento"}
+
+    IO.puts(" Tiempo agotado. No fue posible asignar un taxi para #{username}")
+    TaxiBeWeb.Endpoint.broadcast("customer:" <> username, "booking_request", msg)
 
     {:stop, :normal, state}
   end
 
   def handle_info(:timeout_3_drivers, state), do: {:noreply, state}
 
-  def handle_cast({:process_accept, _msg}, %{accepted: false} = state) do
-    %{request: %{"username" => customer}} = state
+  def handle_cast({:process_accept, _msg}, %{accepted: false, request: %{"username" => customer, "booking_id" => booking_id}} = state) do
+    msg = %{
+      msg: "Tu taxi está en camino y llegará en 5 minutos",
+      bookingId: booking_id
+    }
 
-    TaxiBeWeb.Endpoint.broadcast("customer:" <> customer, "booking_request", %{
-      msg: "Tu taxi está en camino y llegará en 5 minutos"
-    })
+    IO.inspect(msg, label: "Taxi aceptado para customer:#{customer}")
+    TaxiBeWeb.Endpoint.broadcast("customer:" <> customer, "booking_request", msg)
 
     Process.cancel_timer(state.timer)
 
@@ -82,6 +92,7 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
   end
 
   def handle_cast({:process_reject, _msg}, state) do
+    IO.puts(" Rechazo recibido. Esperando más respuestas...")
     {:noreply, state}
   end
 
@@ -104,7 +115,9 @@ defmodule TaxiBeWeb.TaxiAllocationJob do
           "Cancelación fuera de rango"
       end
 
+    IO.puts(" Cancelación solicitada por #{username}: #{msg}")
     TaxiBeWeb.Endpoint.broadcast("customer:" <> username, "booking_request", %{msg: msg})
+
     {:stop, :normal, state, :ok}
   end
 end

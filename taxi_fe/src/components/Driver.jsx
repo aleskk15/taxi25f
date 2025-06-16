@@ -1,52 +1,62 @@
-import React, {useEffect, useState} from 'react';
+import React, { useEffect, useState } from 'react';
 import Button from '@mui/material/Button';
-
 import socket from '../services/taxi_socket';
 import { Card, CardContent, Typography } from '@mui/material';
 
-function Driver(props) {
+function Customer(props) {
   let [message, setMessage] = useState();
   let [bookingId, setBookingId] = useState();
   let [visible, setVisible] = useState(false);
+
   useEffect(() => {
-    let channel = socket.channel("driver:" + props.username, {token: "123"});
+    const channel = socket.channel("customer:" + props.username, {});
+    
     channel.on("booking_request", data => {
-      console.log("Received", data);
+      console.log("CUSTOMER RECEIVED:", data);
       setMessage(data.msg);
-      setBookingId(data.bookingId);
+      if (data.bookingId) {
+        setBookingId(data.bookingId);
+      }
       setVisible(true);
     });
-    channel.join();
-  },[props]);
 
-  let reply = (decision) => {
+    channel.join();
+
+    return () => {
+      channel.leave();
+    };
+  }, [props.username]);
+
+  const cancelBooking = () => {
+    if (!bookingId) return;
     fetch(`http://localhost:4000/api/bookings/${bookingId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({action: decision, username: props.username})
-    }).then(resp => setVisible(false));
+      body: JSON.stringify({action: 'cancel', username: props.username})
+    }).then(resp => {
+      setMessage("Cancelación enviada.");
+    });
   };
 
   return (
     <div style={{textAlign: "center", borderStyle: "solid"}}>
-        Driver: {props.username}
-        <div style={{backgroundColor: "lavender", height: "100px"}}>
-          {
-            visible ?
-            <Card variant="outlined" style={{margin: "auto", width: "600px"}}>
-              <CardContent>
-                <Typography>
-                {message}
-                </Typography>
-              </CardContent>
-              <Button onClick={() => reply("accept")} variant="outlined" color="primary">Accept</Button>
-              <Button onClick={() => reply("reject")} variant="outlined" color="secondary">Reject</Button>
-            </Card> :
-            null
-          }
-        </div>
+      Customer: {props.username}
+      <div style={{backgroundColor: "lavender", minHeight: "120px", padding: "10px"}}>
+        {visible && (
+          <Card variant="outlined" style={{margin: "auto", width: "600px"}}>
+            <CardContent>
+              <Typography>{message}</Typography>
+            </CardContent>
+            {bookingId && (
+              <Button onClick={cancelBooking} variant="outlined" color="error">
+                Cancelar viaje
+              </Button>
+            )}
+          </Card>
+        )}
+      </div>
     </div>
   );
 }
 
-export default Driver;
+export default Customer;
